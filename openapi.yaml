@@ -1,0 +1,438 @@
+openapi: 3.1.0
+info:
+  title: Osea microservice API
+  version: 0.2.0
+  summary: REST API exposed by every Osea hypervisor microservice.
+  description: |
+    Single contract implemented by `osea-service-windows` (Hyper-V, Failover
+    Cluster) and `osea-service-linux` (Proxmox and other hypervisors).
+    The only caller is `osea-server`.
+
+    Rules shared by every operation:
+
+    - The microservice knows nothing about users or tenants. The central
+      server authorizes each request per tenant before calling it.
+    - Identifiers are opaque strings chosen by the microservice. Callers must
+      not parse them. A virtual machine is globally identified by its hosting
+      environment plus its identifier, see `VirtualMachineIdentity`.
+    - Errors use `application/problem+json` (RFC 9457) and never contain
+      secrets or hypervisor credentials.
+    - Changes are additive. A breaking change raises the major version.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://{host}/v1
+    description: A microservice instance, reachable from the central server only.
+    variables:
+      host:
+        default: localhost:8443
+        description: Host and port of the microservice.
+security:
+  - serviceToken: []
+tags:
+  - name: Service
+    description: Health and capabilities of the microservice.
+  - name: Virtual machines
+    description: Inventory and power actions.
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Service]
+      summary: Check that the microservice is running.
+      description: |
+        Does not call the hypervisor. Use `getServiceInfo` to check the
+        hypervisor connection.
+      security: []
+      responses:
+        "200":
+          description: The microservice is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /info:
+    get:
+      operationId: getServiceInfo
+      tags: [Service]
+      summary: Describe the microservice and the hypervisor it manages.
+      responses:
+        "200":
+          description: Service and hypervisor details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceInfo"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/HypervisorUnreachable"
+  /virtual-machines:
+    get:
+      operationId: listVirtualMachines
+      tags: [Virtual machines]
+      summary: List the virtual machines of the hypervisor or cluster.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One page of virtual machines.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VirtualMachinePage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/HypervisorUnreachable"
+  /virtual-machines/{virtualMachineId}:
+    get:
+      operationId: getVirtualMachine
+      tags: [Virtual machines]
+      summary: Get one virtual machine.
+      parameters:
+        - $ref: "#/components/parameters/VirtualMachineId"
+      responses:
+        "200":
+          description: The virtual machine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VirtualMachine"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/VirtualMachineNotFound"
+        "502":
+          $ref: "#/components/responses/HypervisorUnreachable"
+  /virtual-machines/{virtualMachineId}/start:
+    post:
+      operationId: startVirtualMachine
+      tags: [Virtual machines]
+      summary: Start a stopped virtual machine.
+      description: |
+        Returns once the hypervisor reports the machine as running or
+        starting. Calling it on a machine that is already running returns 409.
+      parameters:
+        - $ref: "#/components/parameters/VirtualMachineId"
+      responses:
+        "200":
+          $ref: "#/components/responses/VirtualMachineAfterAction"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/VirtualMachineNotFound"
+        "409":
+          $ref: "#/components/responses/PowerStateConflict"
+        "502":
+          $ref: "#/components/responses/HypervisorUnreachable"
+  /virtual-machines/{virtualMachineId}/shutdown:
+    post:
+      operationId: shutdownVirtualMachine
+      tags: [Virtual machines]
+      summary: Ask the guest operating system to shut down.
+      description: |
+        Graceful shutdown through the guest tools. The machine may still be
+        running when the response is sent. Poll `getVirtualMachine` to follow
+        the power state.
+      parameters:
+        - $ref: "#/components/parameters/VirtualMachineId"
+      responses:
+        "200":
+          $ref: "#/components/responses/VirtualMachineAfterAction"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/VirtualMachineNotFound"
+        "409":
+          $ref: "#/components/responses/PowerStateConflict"
+        "502":
+          $ref: "#/components/responses/HypervisorUnreachable"
+  /virtual-machines/{virtualMachineId}/power-off:
+    post:
+      operationId: powerOffVirtualMachine
+      tags: [Virtual machines]
+      summary: Cut the power of a virtual machine immediately.
+      description: |
+        Equivalent to unplugging the machine. The guest can lose data. Prefer
+        `shutdownVirtualMachine`.
+      parameters:
+        - $ref: "#/components/parameters/VirtualMachineId"
+      responses:
+        "200":
+          $ref: "#/components/responses/VirtualMachineAfterAction"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/VirtualMachineNotFound"
+        "409":
+          $ref: "#/components/responses/PowerStateConflict"
+        "502":
+          $ref: "#/components/responses/HypervisorUnreachable"
+components:
+  securitySchemes:
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: |
+        Token issued to the central server and configured in the microservice
+        through its environment, never in the repository. Transport is TLS.
+  parameters:
+    VirtualMachineId:
+      name: virtualMachineId
+      in: path
+      required: true
+      description: Opaque identifier returned by `listVirtualMachines`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: "^[A-Za-z0-9._:-]+$"
+        examples: ["6f1c2a9e-3b7d-4c55-9d0a-1e2f3a4b5c6d", "pve1:100"]
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of items in the page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      description: Value of `nextCursor` from the previous page.
+      schema:
+        type: string
+        maxLength: 512
+  responses:
+    VirtualMachineAfterAction:
+      description: The virtual machine as seen right after the action.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/VirtualMachine"
+    InvalidRequest:
+      description: A parameter is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: The service token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    VirtualMachineNotFound:
+      description: |
+        No virtual machine has this identifier, or the service account has no
+        right on it. Both cases are reported the same way.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PowerStateConflict:
+      description: The action is not possible in the current power state.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    HypervisorUnreachable:
+      description: The hypervisor did not answer or refused the microservice credentials.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    ServiceInfo:
+      type: object
+      required: [serviceVersion, contractVersion, hostingEnvironment, hypervisorKind, isHypervisorReachable]
+      properties:
+        serviceVersion:
+          type: string
+          description: Version of the microservice.
+          examples: ["0.1.0"]
+        contractVersion:
+          type: string
+          description: Version of this contract the microservice implements.
+          examples: ["0.2.0"]
+        hostingEnvironment:
+          $ref: "#/components/schemas/HostingEnvironment"
+        hypervisorKind:
+          $ref: "#/components/schemas/HypervisorKind"
+          description: Same value as `hostingEnvironment.kind`.
+        isHypervisorReachable:
+          type: boolean
+          description: Result of a live check against the hypervisor.
+    HostingEnvironment:
+      type: object
+      description: |
+        The standalone hypervisor or the cluster a microservice manages. It is
+        what a virtual machine "belongs to" and where actions on it are sent.
+        One microservice instance manages exactly one hosting environment.
+      required: [nativeId, name, kind]
+      properties:
+        nativeId:
+          type: string
+          description: |
+            Identifier the hypervisor itself gives to the environment, stable
+            across restarts: the cluster id of a Failover Cluster, the cluster
+            name of a Proxmox cluster, or the machine id of a standalone host.
+            Never changes when the microservice is moved or reinstalled.
+          examples: ["a3b1c2d4-0000-4e5f-8a9b-112233445566", "pve-cluster-1"]
+        name:
+          type: string
+          description: Human-readable name shown to administrators.
+        kind:
+          $ref: "#/components/schemas/HypervisorKind"
+    VirtualMachineIdentity:
+      type: object
+      description: |
+        Globally unique identity of a virtual machine. A VM `id` is only
+        unique inside its hosting environment (a Proxmox `vmid` is a small
+        number reused by every cluster), so the two fields always travel
+        together when a VM is stored or referenced outside a microservice.
+      required: [environmentNativeId, virtualMachineId]
+      properties:
+        environmentNativeId:
+          type: string
+          description: '`HostingEnvironment.nativeId` of the owner.'
+        virtualMachineId:
+          type: string
+          description: '`VirtualMachine.id` inside that environment.'
+    VirtualMachineRecord:
+      type: object
+      description: |
+        Shape of a virtual machine when the central server stores it in its
+        database. Informational: no endpoint of this API returns it. It shows
+        what each field represents and which part comes from the microservice
+        or is owned by the server.
+        The unique key is (`environmentId`, `nativeId`). Tenant, project and
+        quota fields are owned by the server and are not part of this contract.
+      required:
+        - id
+        - environmentId
+        - nativeId
+        - name
+        - lastKnownPowerState
+        - cpuCount
+        - memoryMegabytes
+        - firstSeenAt
+        - lastSyncedAt
+        - isMissing
+      properties:
+        id:
+          type: string
+          description: Identifier assigned by the central server. Used in its own API and audit log.
+        environmentId:
+          type: string
+          description: |
+            Server identifier of the registered hosting environment (the
+            server maps it to the microservice URL and to
+            `HostingEnvironment.nativeId`). Tells where to send actions.
+        nativeId:
+          type: string
+          description: '`VirtualMachine.id` as returned by the microservice.'
+        name:
+          type: string
+          description: Last name reported by the hypervisor. Not unique, may be renamed.
+        hostName:
+          type: string
+          description: Node that ran the machine at the last sync. Changes when a cluster moves it.
+        lastKnownPowerState:
+          $ref: "#/components/schemas/PowerState"
+        cpuCount:
+          type: integer
+          minimum: 1
+        memoryMegabytes:
+          type: integer
+          minimum: 1
+        firstSeenAt:
+          type: string
+          format: date-time
+          description: When a sync first returned this machine.
+        lastSyncedAt:
+          type: string
+          format: date-time
+          description: When the values above were last refreshed from the microservice.
+        isMissing:
+          type: boolean
+          description: |
+            True when a full sync no longer returns the machine. The record is
+            kept so the audit log still points to it.
+    HypervisorKind:
+      type: string
+      description: |
+        Kind of hypervisor or cluster behind the microservice. New values may
+        be added, callers must handle unknown values.
+      enum: [hyper-v, failover-cluster, proxmox, proxmox-cluster]
+    PowerState:
+      type: string
+      description: |
+        Power state normalized across hypervisors. `unknown` covers any state
+        the microservice cannot map.
+      enum: [running, stopped, paused, suspended, starting, stopping, unknown]
+    VirtualMachine:
+      type: object
+      required: [id, name, powerState, cpuCount, memoryMegabytes]
+      properties:
+        id:
+          type: string
+          description: Opaque identifier, stable for the life of the machine.
+        name:
+          type: string
+        powerState:
+          $ref: "#/components/schemas/PowerState"
+        cpuCount:
+          type: integer
+          minimum: 1
+          description: Number of virtual CPUs.
+        memoryMegabytes:
+          type: integer
+          minimum: 1
+          description: Memory assigned to the machine, in megabytes.
+        hostName:
+          type: string
+          description: Cluster node or hypervisor currently running the machine.
+    VirtualMachinePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/VirtualMachine"
+        nextCursor:
+          type: string
+          description: Absent on the last page.
+    Problem:
+      type: object
+      description: Error body, RFC 9457.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          description: |
+            Stable error code as a relative URI. Examples:
+            `/errors/virtual-machine-not-found`, `/errors/invalid-power-state`.
+        title:
+          type: string
+          description: Short summary of what failed.
+        status:
+          type: integer
+          description: HTTP status code.
+        detail:
+          type: string
+          description: What failed, with which data, and what to do. No secrets.
