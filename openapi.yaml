@@ -1,0 +1,116 @@
+openapi: 3.1.0
+info:
+  title: Osea Microservice API
+  version: 0.1.0
+  description: Shared API implemented by hypervisor microservices.
+servers:
+  - url: /v1
+    description: Versioned microservice API
+paths:
+  /vms:
+    get:
+      operationId: listVirtualMachines
+      summary: List virtual machines visible to the configured hypervisor credentials
+      responses:
+        '200':
+          description: Virtual machine inventory
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [virtualMachines]
+                properties:
+                  virtualMachines:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/VirtualMachine'
+        '502':
+          $ref: '#/components/responses/HypervisorError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /vms/{vmId}/start:
+    parameters:
+      - name: vmId
+        in: path
+        required: true
+        description: Opaque VM identifier returned by the inventory operation
+        schema:
+          type: string
+          minLength: 1
+          example: vm-100
+    post:
+      operationId: startVirtualMachine
+      summary: Start a virtual machine
+      responses:
+        '202':
+          description: Start request accepted by the hypervisor
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taskId]
+                properties:
+                  taskId:
+                    type: string
+                    description: Opaque hypervisor task identifier
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/HypervisorError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  schemas:
+    VirtualMachine:
+      type: object
+      required: [id, name, status]
+      properties:
+        id:
+          type: string
+          description: Hypervisor-neutral identifier used in VM operations
+          example: '100'
+        name:
+          type: string
+          example: database-01
+        status:
+          type: string
+          enum: [running, stopped, unknown]
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+  responses:
+    InvalidRequest:
+      description: The request contains an invalid VM identifier
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: The virtual machine does not exist in the configured inventory
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    HypervisorError:
+      description: The hypervisor is unavailable or returned an invalid response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Unexpected service error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
